@@ -253,9 +253,14 @@ class FclmClient:
     """Client for fetching employee data from FCLM Portal."""
 
     def __init__(self, cookie="", warehouse_id="IND8"):
-        self.cookie = cookie
+        self.cookie = self._sanitize_cookie(cookie)
         self.warehouse_id = warehouse_id
         self._ssl_ctx = ssl.create_default_context()
+
+    @staticmethod
+    def _sanitize_cookie(cookie):
+        """Strip non-ASCII chars (e.g. ellipsis from browser truncation)."""
+        return "".join(c for c in cookie if ord(c) < 128)
 
     def is_connected(self):
         return bool(self.cookie.strip())
@@ -463,6 +468,7 @@ class FclmClient:
         shift = self.get_shift_date_range()
         all_aas = {p: [] for p in FCLM_RESTRICTED_PATHS}
 
+        errors = []
         for process_name, process_id in FCLM_PROCESS_IDS.items():
             try:
                 params = urllib.parse.urlencode({
@@ -480,14 +486,19 @@ class FclmClient:
                 })
                 url = f"{FCLM_BASE_URL}/reports/functionRollup?{params}"
                 html = self._request(url)
+                if "login" in html.lower() or "midway" in html.lower() or "Sign In" in html:
+                    errors.append(f"{process_name}: Cookie expired (login page returned)")
+                    continue
                 self._parse_function_rollup(html, process_name, all_aas)
-            except Exception:
-                pass  # Skip failed processes silently
+            except Exception as e:
+                errors.append(f"{process_name}: {e}")
 
         # Sort each path by hours descending
         for path in all_aas:
             all_aas[path].sort(key=lambda a: a["hours"], reverse=True)
 
+        # Attach errors so the UI can report them
+        all_aas["_errors"] = errors
         return all_aas
 
     def _parse_function_rollup(self, html, process_name, result):
@@ -1575,10 +1586,23 @@ class App:
         thread.start()
 
     def _on_path_sync_done(self, data):
+        errors = data.pop("_errors", [])
         self._fclm_path_aas = data
         total = sum(len(aas) for aas in data.values())
         paths_with_data = sum(1 for aas in data.values() if aas)
-        self.status_var.set(f"FCLM sync complete: {total} AAs on {paths_with_data} restricted paths")
+
+        if errors and total == 0:
+            error_detail = "\n".join(errors)
+            self.status_var.set(f"FCLM sync: 0 AAs found ({len(errors)} errors)")
+            self.status_label.config(fg="#e74c3c")
+            messagebox.showwarning("FCLM Sync Issues",
+                                   f"No AA data returned.\n\nErrors:\n{error_detail}")
+            return
+
+        msg = f"FCLM sync complete: {total} AAs on {paths_with_data} restricted paths"
+        if errors:
+            msg += f" ({len(errors)} process errors)"
+        self.status_var.set(msg)
         self.status_label.config(fg="#2ecc71")
 
         # Auto-open FCLM dashboard
