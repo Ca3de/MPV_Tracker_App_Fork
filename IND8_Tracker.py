@@ -6,6 +6,9 @@ import datetime
 import csv
 import re
 import ssl
+import shutil
+import tempfile
+import base64
 import threading
 import urllib.request
 import urllib.parse
@@ -598,6 +601,237 @@ class FclmClient:
             except ValueError:
                 return 0.0
         return 0.0
+
+
+# ----------------- BROWSER COOKIE READER -----------------
+
+class BrowserCookieReader:
+    """Read FCLM session cookies directly from browser cookie databases.
+
+    Supports Edge, Chrome (Windows via DPAPI + AES-256-GCM) and Firefox
+    (all platforms, plain SQLite).  The user just needs to be logged into
+    FCLM in their browser – no DevTools required.
+    """
+
+    FCLM_DOMAINS = [".amazon.com", "fclm-portal.amazon.com"]
+
+    # --- public API ---
+
+    @classmethod
+    def auto_detect(cls):
+        """Try installed browsers and return (cookie_str, browser_name).
+
+        Returns (None, error_message) when no cookies are found.
+        """
+        browsers = []
+        if sys.platform == "win32":
+            browsers = [
+                ("Edge", cls._read_edge),
+                ("Chrome", cls._read_chrome),
+                ("Firefox", cls._read_firefox),
+            ]
+        else:
+            # Linux / macOS – only Firefox uses plain SQLite
+            browsers = [
+                ("Firefox", cls._read_firefox),
+            ]
+
+        errors = []
+        for name, method in browsers:
+            try:
+                cookie = method()
+                if cookie:
+                    return cookie, name
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+
+        if errors:
+            return None, "No FCLM cookies found.\n" + "\n".join(errors)
+        return None, "No supported browser found with FCLM cookies."
+
+    # --- Firefox ---
+
+    @classmethod
+    def _read_firefox(cls):
+        if sys.platform == "win32":
+            profiles_dir = os.path.join(
+                os.getenv("APPDATA", ""), "Mozilla", "Firefox", "Profiles"
+            )
+        elif sys.platform == "darwin":
+            profiles_dir = os.path.expanduser(
+                "~/Library/Application Support/Firefox/Profiles"
+            )
+        else:
+            profiles_dir = os.path.expanduser("~/.mozilla/firefox")
+
+        if not os.path.isdir(profiles_dir):
+            return None
+
+        # Pick the first profile that has a cookies.sqlite
+        cookie_db = None
+        for entry in sorted(os.listdir(profiles_dir)):
+            candidate = os.path.join(profiles_dir, entry, "cookies.sqlite")
+            if os.path.isfile(candidate):
+                cookie_db = candidate
+                break
+        if not cookie_db:
+            return None
+
+        return cls._read_sqlite_cookies(
+            cookie_db,
+            table="moz_cookies",
+            host_col="host",
+            name_col="name",
+            value_col="value",
+        )
+
+    # --- Chrome / Edge (Windows) ---
+
+    @classmethod
+    def _read_chrome(cls):
+        return cls._read_chromium("Google", "Chrome")
+
+    @classmethod
+    def _read_edge(cls):
+        return cls._read_chromium("Microsoft", "Edge")
+
+    @classmethod
+    def _read_chromium(cls, vendor, browser):
+        if sys.platform != "win32":
+            return None
+
+        local_appdata = os.getenv("LOCALAPPDATA", "")
+        user_data = os.path.join(local_appdata, vendor, browser, "User Data")
+        if not os.path.isdir(user_data):
+            return None
+
+        # Obtain the AES key from Local State
+        key = cls._get_chromium_key(user_data)
+        if key is None:
+            return None
+
+        # Try Default profile first, then Profile 1, Profile 2 …
+        for profile in ["Default", "Profile 1", "Profile 2"]:
+            db_path = os.path.join(user_data, profile, "Network", "Cookies")
+            if not os.path.isfile(db_path):
+                continue
+            cookie = cls._read_chromium_cookies(db_path, key)
+            if cookie:
+                return cookie
+        return None
+
+    @classmethod
+    def _get_chromium_key(cls, user_data_dir):
+        local_state_path = os.path.join(user_data_dir, "Local State")
+        if not os.path.isfile(local_state_path):
+            return None
+        try:
+            with open(local_state_path, "r", encoding="utf-8") as fh:
+                state = json.load(fh)
+            encrypted_key = base64.b64decode(
+                state["os_crypt"]["encrypted_key"]
+            )
+            # Strip the "DPAPI" prefix (5 bytes)
+            encrypted_key = encrypted_key[5:]
+            return cls._dpapi_decrypt(encrypted_key)
+        except Exception:
+            return None
+
+    @classmethod
+    def _read_chromium_cookies(cls, db_path, key):
+        tmp = tempfile.mktemp(suffix=".sqlite")
+        shutil.copy2(db_path, tmp)
+        try:
+            conn = sqlite3.connect(tmp)
+            cur = conn.cursor()
+            cookies = []
+            for domain in cls.FCLM_DOMAINS:
+                cur.execute(
+                    "SELECT name, encrypted_value FROM cookies "
+                    "WHERE host_key = ? OR host_key LIKE ?",
+                    (domain, f"%{domain}"),
+                )
+                for name, enc_val in cur.fetchall():
+                    val = cls._decrypt_chromium_value(enc_val, key)
+                    if val:
+                        cookies.append(f"{name}={val}")
+            conn.close()
+            return "; ".join(cookies) if cookies else None
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    @classmethod
+    def _decrypt_chromium_value(cls, encrypted, key):
+        if not encrypted:
+            return None
+        # v10 / v11 → AES-256-GCM
+        if encrypted[:3] in (b"v10", b"v11"):
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                nonce = encrypted[3:15]
+                ciphertext = encrypted[15:]
+                return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
+            except Exception:
+                return None
+        # Older DPAPI-only cookies
+        raw = cls._dpapi_decrypt(encrypted)
+        return raw.decode("utf-8", errors="replace") if raw else None
+
+    # --- DPAPI (Windows) ---
+
+    @staticmethod
+    def _dpapi_decrypt(data):
+        if sys.platform != "win32":
+            return None
+        import ctypes
+        import ctypes.wintypes
+
+        class _BLOB(ctypes.Structure):
+            _fields_ = [
+                ("cbData", ctypes.wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char)),
+            ]
+
+        blob_in = _BLOB(len(data), ctypes.create_string_buffer(data, len(data)))
+        blob_out = _BLOB()
+        if ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(blob_in), None, None, None, None, 0,
+            ctypes.byref(blob_out),
+        ):
+            result = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+            return result
+        return None
+
+    # --- shared SQLite reader (Firefox) ---
+
+    @classmethod
+    def _read_sqlite_cookies(cls, db_path, *, table, host_col, name_col, value_col):
+        tmp = tempfile.mktemp(suffix=".sqlite")
+        shutil.copy2(db_path, tmp)
+        try:
+            conn = sqlite3.connect(tmp)
+            cur = conn.cursor()
+            cookies = []
+            for domain in cls.FCLM_DOMAINS:
+                cur.execute(
+                    f"SELECT {name_col}, {value_col} FROM {table} "
+                    f"WHERE {host_col} = ? OR {host_col} LIKE ?",
+                    (domain, f"%{domain}"),
+                )
+                for name, value in cur.fetchall():
+                    if value:
+                        cookies.append(f"{name}={value}")
+            conn.close()
+            return "; ".join(cookies) if cookies else None
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 # ----------------- MPV CHECKING -----------------
@@ -1347,27 +1581,31 @@ class App:
         win = tk.Toplevel(self.root)
         win.title("FCLM Settings")
         win.configure(bg="#1a1a1a")
-        win.geometry("550x480")
+        win.geometry("550x560")
         win.resizable(False, False)
 
         tk.Label(win, text="FCLM Connection Settings", bg="#1a1a1a", fg="#ff9900",
                  font=("Segoe UI", 14, "bold")).pack(pady=(15, 5))
 
-        # Instructions
-        instructions = (
-            "To connect to FCLM, you need your browser session cookie:\n"
-            "1. Open fclm-portal.amazon.com in your browser\n"
-            "2. Log in with Midway if prompted\n"
-            "3. Press F12 to open Developer Tools\n"
-            "4. Go to the Network tab\n"
-            "5. Refresh the page (F5)\n"
-            "6. Click any request in the list\n"
-            "7. Find the 'Cookie' header and copy its full value\n"
-            "8. Paste it below"
-        )
-        tk.Label(win, text=instructions, bg="#1a1a1a", fg="#aaaaaa",
-                 font=("Segoe UI", 9), justify="left", anchor="w",
-                 wraplength=500).pack(fill="x", padx=20, pady=(5, 10))
+        # --- Auto-detect section (primary) ---
+        auto_frame = tk.Frame(win, bg="#222222", highlightbackground="#ff9900",
+                              highlightthickness=1)
+        auto_frame.pack(fill="x", padx=20, pady=(10, 5))
+
+        tk.Label(auto_frame, text="Automatic Setup", bg="#222222", fg="#ff9900",
+                 font=("Segoe UI", 12, "bold")).pack(pady=(10, 2))
+        tk.Label(auto_frame,
+                 text="Log into fclm-portal.amazon.com in your browser,\n"
+                      "then click the button below.",
+                 bg="#222222", fg="#cccccc", font=("Segoe UI", 10),
+                 justify="center").pack(pady=(0, 8))
+
+        # Status
+        status_var = tk.StringVar(value="")
+        status_label = tk.Label(win, textvariable=status_var, bg="#1a1a1a",
+                                fg="#aaaaaa", font=("Segoe UI", 10),
+                                wraplength=500, justify="left")
+        status_label.pack(pady=5)
 
         # Warehouse ID
         wh_frame = tk.Frame(win, bg="#1a1a1a")
@@ -1379,20 +1617,61 @@ class App:
                             bg="#333333", fg="#e6e6e6", insertbackground="white", relief="flat")
         wh_entry.pack(side="left", padx=(10, 0))
 
-        # Cookie
-        tk.Label(win, text="FCLM Cookie:", bg="#1a1a1a", fg="#e6e6e6",
-                 font=("Segoe UI", 10)).pack(anchor="w", padx=20, pady=(10, 2))
-        cookie_text = tk.Text(win, height=6, bg="#333333", fg="#e6e6e6",
+        def grab_from_browser():
+            status_var.set("Searching for FCLM cookies in your browser...")
+            status_label.config(fg="#aaaaaa")
+            win.update()
+
+            cookie, info = BrowserCookieReader.auto_detect()
+            if cookie:
+                # Fill the cookie field and auto-save
+                cookie_text.delete("1.0", "end")
+                cookie_text.insert("1.0", cookie)
+                wh = wh_var.get().strip() or "IND8"
+                self.config["fclm_cookie"] = cookie
+                self.config["fclm_warehouse_id"] = wh
+                save_config(self.config)
+                self.fclm = FclmClient(cookie=cookie, warehouse_id=wh)
+                self._update_fclm_status_label()
+
+                # Test the connection
+                status_var.set(f"Found cookies from {info}. Testing connection...")
+                status_label.config(fg="#aaaaaa")
+                win.update()
+                ok, msg = self.fclm.test_connection()
+                if ok:
+                    status_var.set(f"Connected via {info}!")
+                    status_label.config(fg="#2ecc71")
+                else:
+                    status_var.set(
+                        f"Cookies found in {info} but connection failed:\n{msg}\n\n"
+                        "Try logging into FCLM in your browser and clicking again."
+                    )
+                    status_label.config(fg="#e74c3c")
+            else:
+                # info contains the error message
+                status_var.set(
+                    f"{info}\n\n"
+                    "Make sure you are logged into fclm-portal.amazon.com\n"
+                    "in Edge, Chrome, or Firefox, then try again."
+                )
+                status_label.config(fg="#e74c3c")
+
+        grab_btn = tk.Button(auto_frame, text="Grab Cookies from Browser",
+                             bg="#ff9900", fg="#1a1a1a",
+                             font=("Segoe UI", 12, "bold"), relief="flat",
+                             padx=20, pady=8, cursor="hand2",
+                             command=grab_from_browser)
+        grab_btn.pack(pady=(0, 12))
+
+        # --- Manual paste section (secondary / fallback) ---
+        tk.Label(win, text="Or paste cookie manually:", bg="#1a1a1a", fg="#888888",
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(10, 2))
+        cookie_text = tk.Text(win, height=4, bg="#333333", fg="#e6e6e6",
                               insertbackground="white", relief="flat",
                               font=("Consolas", 9), wrap="word")
         cookie_text.pack(fill="x", padx=20)
         cookie_text.insert("1.0", self.config.get("fclm_cookie", ""))
-
-        # Status
-        status_var = tk.StringVar(value="")
-        status_label = tk.Label(win, textvariable=status_var, bg="#1a1a1a",
-                                fg="#aaaaaa", font=("Segoe UI", 10))
-        status_label.pack(pady=5)
 
         # Buttons
         btn_frame = tk.Frame(win, bg="#1a1a1a")
