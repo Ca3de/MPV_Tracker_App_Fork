@@ -255,10 +255,13 @@ def get_all_associates():
 class FclmClient:
     """Client for fetching employee data from FCLM Portal."""
 
-    def __init__(self, cookie="", warehouse_id="IND8"):
+    def __init__(self, cookie="", warehouse_id="IND8",
+                 on_cookie_refreshed=None):
         self.cookie = self._sanitize_cookie(cookie)
         self.warehouse_id = warehouse_id
         self._ssl_ctx = ssl.create_default_context()
+        # Callback invoked with the new cookie string after a silent refresh
+        self._on_cookie_refreshed = on_cookie_refreshed
 
     @staticmethod
     def _sanitize_cookie(cookie):
@@ -297,22 +300,51 @@ class FclmClient:
 
     # ---------- HTTP helpers ----------
 
-    def _request(self, url):
-        """Make an authenticated GET request to FCLM."""
+    @staticmethod
+    def _is_login_page(html):
+        """Return True if the HTML looks like a Midway login redirect."""
+        lower = html.lower()
+        return ("midway" in lower or "sign in" in lower
+                or ("/login" in lower and "ganttChart" not in html))
+
+    def _raw_get(self, url):
+        """Single authenticated GET (no retry)."""
         req = urllib.request.Request(url)
         req.add_header("Cookie", self.cookie)
         req.add_header("User-Agent", "IND8Tracker/2.0")
         resp = urllib.request.urlopen(req, context=self._ssl_ctx, timeout=20)
         return resp.read().decode("utf-8", errors="replace")
 
+    def _request(self, url):
+        """Authenticated GET with silent cookie auto-refresh on expiry.
+
+        If the first attempt returns a Midway login page, re-reads
+        cookies from the browser and retries once.
+        """
+        html = self._raw_get(url)
+        if not self._is_login_page(html):
+            return html
+
+        # Cookie expired – try to silently grab fresh ones
+        new_cookie, _browser = BrowserCookieReader.auto_detect()
+        if not new_cookie:
+            return html  # no fresh cookie available, return the login page
+
+        self.cookie = self._sanitize_cookie(new_cookie)
+        if self._on_cookie_refreshed:
+            try:
+                self._on_cookie_refreshed(self.cookie)
+            except Exception:
+                pass  # don't let callback errors break the request
+
+        return self._raw_get(url)
+
     def test_connection(self):
         """Test FCLM connectivity. Returns (success, message)."""
         try:
             url = f"{FCLM_BASE_URL}/employee/timeDetails?warehouseId={self.warehouse_id}"
             html = self._request(url)
-            lower = html.lower()
-            # Check for login/auth redirect FIRST (login pages can contain "employee")
-            if "midway" in lower or "sign in" in lower or ("/login" in lower and "ganttChart" not in html):
+            if self._is_login_page(html):
                 return False, "Cookie expired or invalid - FCLM is asking to log in."
             if "ganttChart" in html or "Time Details" in html:
                 return True, "Connected to FCLM successfully."
@@ -493,7 +525,7 @@ class FclmClient:
                 })
                 url = f"{FCLM_BASE_URL}/reports/functionRollup?{params}"
                 html = self._request(url)
-                if "login" in html.lower() or "midway" in html.lower() or "Sign In" in html:
+                if self._is_login_page(html):
                     errors.append(f"{process_name}: Cookie expired (login page returned)")
                     continue
                 self._parse_function_rollup(html, process_name, all_aas)
@@ -1003,6 +1035,7 @@ class App:
         self.fclm = FclmClient(
             cookie=self.config.get("fclm_cookie", ""),
             warehouse_id=self.config.get("fclm_warehouse_id", "IND8"),
+            on_cookie_refreshed=self._on_cookie_refreshed,
         )
         # Cached FCLM data
         self._fclm_employee_data = None
@@ -1569,6 +1602,16 @@ class App:
     #                   FCLM INTEGRATION
     # ============================================================
 
+    def _on_cookie_refreshed(self, new_cookie):
+        """Called by FclmClient when it silently refreshes an expired cookie."""
+        self.config["fclm_cookie"] = new_cookie
+        save_config(self.config)
+        # Update the banner on the main thread (this may be called from a bg thread)
+        try:
+            self.root.after(0, self._update_fclm_status_label)
+        except Exception:
+            pass
+
     def _update_fclm_status_label(self):
         if self.fclm.is_connected():
             self.fclm_status_label.config(text="FCLM: Connected", fg="#2ecc71")
@@ -1631,7 +1674,8 @@ class App:
                 self.config["fclm_cookie"] = cookie
                 self.config["fclm_warehouse_id"] = wh
                 save_config(self.config)
-                self.fclm = FclmClient(cookie=cookie, warehouse_id=wh)
+                self.fclm = FclmClient(cookie=cookie, warehouse_id=wh,
+                                       on_cookie_refreshed=self._on_cookie_refreshed)
                 self._update_fclm_status_label()
 
                 # Test the connection
@@ -1699,7 +1743,8 @@ class App:
             self.config["fclm_cookie"] = cookie
             self.config["fclm_warehouse_id"] = wh
             save_config(self.config)
-            self.fclm = FclmClient(cookie=cookie, warehouse_id=wh)
+            self.fclm = FclmClient(cookie=cookie, warehouse_id=wh,
+                                   on_cookie_refreshed=self._on_cookie_refreshed)
             self._update_fclm_status_label()
             status_var.set("Settings saved!")
             status_label.config(fg="#2ecc71")
@@ -1708,7 +1753,8 @@ class App:
             cookie_text.delete("1.0", "end")
             self.config["fclm_cookie"] = ""
             save_config(self.config)
-            self.fclm = FclmClient(cookie="", warehouse_id=wh_var.get().strip() or "IND8")
+            self.fclm = FclmClient(cookie="", warehouse_id=wh_var.get().strip() or "IND8",
+                                   on_cookie_refreshed=self._on_cookie_refreshed)
             self._update_fclm_status_label()
             status_var.set("Cookie cleared.")
             status_label.config(fg="#aaaaaa")
