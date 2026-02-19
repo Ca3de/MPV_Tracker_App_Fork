@@ -311,7 +311,10 @@ class FclmClient:
         """Single authenticated GET (no retry)."""
         req = urllib.request.Request(url)
         req.add_header("Cookie", self.cookie)
-        req.add_header("User-Agent", "IND8Tracker/2.0")
+        req.add_header("User-Agent",
+                       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0.0.0 Safari/537.36")
         resp = urllib.request.urlopen(req, context=self._ssl_ctx, timeout=20)
         return resp.read().decode("utf-8", errors="replace")
 
@@ -645,7 +648,14 @@ class BrowserCookieReader:
     FCLM in their browser – no DevTools required.
     """
 
-    FCLM_DOMAINS = [".amazon.com", "fclm-portal.amazon.com"]
+    # Only grab cookies set directly on these hosts – avoids pulling in
+    # hundreds of unrelated Amazon cookies (shopping, AWS, etc.) that
+    # would blow the Cookie header past the server's size limit (HTTP 400).
+    FCLM_DOMAINS = [
+        ".amazon.com",                  # Midway auth cookies (top-level)
+        "fclm-portal.amazon.com",       # FCLM session cookies
+        ".fclm-portal.amazon.com",      # FCLM cookies (dot-prefixed variant)
+    ]
 
     # --- public API ---
 
@@ -777,16 +787,16 @@ class BrowserCookieReader:
             conn = sqlite3.connect(tmp)
             cur = conn.cursor()
             cookies = []
-            for domain in cls.FCLM_DOMAINS:
-                cur.execute(
-                    "SELECT name, encrypted_value FROM cookies "
-                    "WHERE host_key = ? OR host_key LIKE ?",
-                    (domain, f"%{domain}"),
-                )
-                for name, enc_val in cur.fetchall():
-                    val = cls._decrypt_chromium_value(enc_val, key)
-                    if val:
-                        cookies.append(f"{name}={val}")
+            placeholders = ",".join("?" for _ in cls.FCLM_DOMAINS)
+            cur.execute(
+                "SELECT name, encrypted_value FROM cookies "
+                f"WHERE host_key IN ({placeholders})",
+                cls.FCLM_DOMAINS,
+            )
+            for name, enc_val in cur.fetchall():
+                val = cls._decrypt_chromium_value(enc_val, key)
+                if val:
+                    cookies.append(f"{name}={val}")
             conn.close()
             return "; ".join(cookies) if cookies else None
         finally:
@@ -848,15 +858,15 @@ class BrowserCookieReader:
             conn = sqlite3.connect(tmp)
             cur = conn.cursor()
             cookies = []
-            for domain in cls.FCLM_DOMAINS:
-                cur.execute(
-                    f"SELECT {name_col}, {value_col} FROM {table} "
-                    f"WHERE {host_col} = ? OR {host_col} LIKE ?",
-                    (domain, f"%{domain}"),
-                )
-                for name, value in cur.fetchall():
-                    if value:
-                        cookies.append(f"{name}={value}")
+            placeholders = ",".join("?" for _ in cls.FCLM_DOMAINS)
+            cur.execute(
+                f"SELECT {name_col}, {value_col} FROM {table} "
+                f"WHERE {host_col} IN ({placeholders})",
+                cls.FCLM_DOMAINS,
+            )
+            for name, value in cur.fetchall():
+                if value:
+                    cookies.append(f"{name}={value}")
             conn.close()
             return "; ".join(cookies) if cookies else None
         finally:
