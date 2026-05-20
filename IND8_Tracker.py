@@ -1063,7 +1063,7 @@ class App:
         style.configure("DarkInner.TFrame", background="#222222")
         style.configure("Dark.TLabel", background="#1a1a1a", foreground="#e6e6e6", font=("Segoe UI", 11))
         style.configure("DarkBanner.TLabel", background="#222222", foreground="#ff9900",
-                        font=("Segoe UI", 22, "bold"), padding=20)
+                        font=("Segoe UI", 18, "bold"), padding=12)
         style.configure("DarkNav.TButton", background="#333333", foreground="#e6e6e6",
                         padding=8, font=("Segoe UI", 11, "bold"))
         style.map("DarkNav.TButton", background=[("active", "#444444")])
@@ -1081,176 +1081,136 @@ class App:
 
     def _build_layout(self):
         # Banner
-        banner_frame = tk.Frame(self.root, bg="#222222", height=80)
+        banner_frame = tk.Frame(self.root, bg="#222222", height=60)
         banner_frame.pack(side="top", fill="x")
 
         try:
-            logo_img = Image.open("ind8logo.png").resize((60, 60))
+            logo_img = Image.open("ind8logo.png").resize((44, 44))
             self.logo = ImageTk.PhotoImage(logo_img)
-            logo_label = tk.Label(banner_frame, image=self.logo, bg="#222222")
-            logo_label.pack(side="left", padx=20)
+            tk.Label(banner_frame, image=self.logo, bg="#222222").pack(side="left", padx=14)
         except Exception:
             pass
 
-        title_label = ttk.Label(banner_frame, text="IND8", style="DarkBanner.TLabel")
-        title_label.pack(side="left")
+        ttk.Label(banner_frame, text="IND8", style="DarkBanner.TLabel").pack(side="left")
 
-        # FCLM status indicator in banner
         self.fclm_status_label = tk.Label(
             banner_frame,
             text="FCLM: Disconnected",
             bg="#222222",
             fg="#e74c3c",
             font=("Segoe UI", 9, "bold"),
-            padx=10,
+            padx=14,
         )
-        self.fclm_status_label.pack(side="right", padx=(0, 10))
-
-        version_label = tk.Label(
-            banner_frame,
-            text=f"v{APP_VERSION}",
-            bg="#222222",
-            fg="#cccccc",
-            font=("Segoe UI", 10, "bold")
-        )
-        version_label.pack(side="right", padx=10)
+        self.fclm_status_label.pack(side="right")
 
         # Main area
         main_frame = tk.Frame(self.root, bg="#1a1a1a")
         main_frame.pack(fill="both", expand=True)
 
         # Navigation sidebar
-        nav = tk.Frame(main_frame, bg="#111111", width=200)
+        nav = tk.Frame(main_frame, bg="#111111", width=180)
         nav.pack(side="left", fill="y")
+        nav.pack_propagate(False)
 
-        self._add_nav_button(nav, "Home", lambda: None)
+        self._add_nav_section(nav, "FCLM", "#ff9900")
+        self._add_nav_button(nav, "Lookup", self.fclm_lookup_badge)
+        self._add_nav_button(nav, "Sync Paths", self.fclm_sync_paths)
+        self._add_nav_button(nav, "Dashboard", self.fclm_open_dashboard)
+        self._add_nav_button(nav, "Settings", self.fclm_open_settings)
 
-        # FCLM section header
-        fclm_header = tk.Label(nav, text="--- FCLM ---", bg="#111111", fg="#ff9900",
-                               font=("Segoe UI", 9, "bold"))
-        fclm_header.pack(fill="x", pady=(8, 2), padx=8)
-        self._add_nav_button(nav, "FCLM Lookup", self.fclm_lookup_badge)
-        self._add_nav_button(nav, "FCLM Sync Paths", self.fclm_sync_paths)
-        self._add_nav_button(nav, "FCLM Dashboard", self.fclm_open_dashboard)
-        self._add_nav_button(nav, "FCLM Settings", self.fclm_open_settings)
-
-        # Manual section header
-        manual_header = tk.Label(nav, text="--- Manual ---", bg="#111111", fg="#888888",
-                                 font=("Segoe UI", 9, "bold"))
-        manual_header.pack(fill="x", pady=(8, 2), padx=8)
+        self._add_nav_section(nav, "Manual", "#888888")
         self._add_nav_button(nav, "Start Direct", self.start_direct)
         self._add_nav_button(nav, "Start Indirect", self.start_indirect)
         self._add_nav_button(nav, "End Current", self.end_current)
-        self._add_nav_button(nav, "Dashboard", self.open_dashboard)
+        self._add_nav_button(nav, "Local Dashboard", self.open_dashboard)
 
-        # Tools section
-        tools_header = tk.Label(nav, text="--- Tools ---", bg="#111111", fg="#888888",
-                                font=("Segoe UI", 9, "bold"))
-        tools_header.pack(fill="x", pady=(8, 2), padx=8)
-        self._add_nav_button(nav, "Export to CSV", self.export_to_excel)
+        self._add_nav_section(nav, "Tools", "#888888")
+        self._add_nav_button(nav, "Export CSV", self.export_to_excel)
         self._add_nav_button(nav, "Shift Report", self.export_shift_report)
-        self._add_nav_button(nav, "Legend", self.open_legend)
 
-        cloud_frame = tk.Frame(nav, bg="#111111")
-        cloud_frame.pack(fill="x", pady=10, padx=8)
-        cloud_cb = tk.Checkbutton(
-            cloud_frame,
-            text="Cloud sync (OneDrive)",
+        tk.Checkbutton(
+            nav,
+            text="Cloud sync",
             variable=self.cloud_sync_var,
-            bg="#111111",
-            fg="#e6e6e6",
+            bg="#111111", fg="#888888",
             selectcolor="#111111",
-            activebackground="#111111",
-            activeforeground="#e6e6e6",
-            command=self.toggle_cloud_sync
-        )
-        cloud_cb.pack(anchor="w")
+            activebackground="#111111", activeforeground="#e6e6e6",
+            font=("Segoe UI", 9),
+            command=self.toggle_cloud_sync,
+        ).pack(anchor="w", padx=12, pady=(14, 4))
+
+        legend_link = tk.Label(nav, text="Legend", bg="#111111", fg="#666666",
+                               font=("Segoe UI", 9, "underline"), cursor="hand2")
+        legend_link.pack(anchor="w", padx=12, pady=(0, 10))
+        legend_link.bind("<Button-1>", lambda e: self.open_legend())
 
         # Content area
         content = tk.Frame(main_frame, bg="#1a1a1a")
-        content.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        content.pack(side="left", fill="both", expand=True, padx=14, pady=14)
 
-        # Input row
+        # Input row — compact single line
         top = tk.Frame(content, bg="#1a1a1a")
-        top.pack(fill="x", pady=(0, 10))
+        top.pack(fill="x", pady=(0, 12))
 
-        tk.Label(top, text="Badge ID:", bg="#1a1a1a", fg="#e6e6e6",
-                 font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w")
-        self.badge_entry = tk.Entry(top, textvariable=self.badge_var, width=18,
-                                    bg="#333333", fg="#e6e6e6", insertbackground="white",
-                                    relief="flat")
-        self.badge_entry.grid(row=0, column=1, sticky="w", padx=(5, 20))
+        def _label(parent, text):
+            return tk.Label(parent, text=text, bg="#1a1a1a", fg="#aaaaaa",
+                            font=("Segoe UI", 9))
+
+        def _entry(parent, var, width):
+            return tk.Entry(parent, textvariable=var, width=width,
+                            bg="#2a2a2a", fg="#e6e6e6", insertbackground="white",
+                            relief="flat", font=("Segoe UI", 10))
+
+        _label(top, "Badge").grid(row=0, column=0, sticky="w")
+        self.badge_entry = _entry(top, self.badge_var, 16)
+        self.badge_entry.grid(row=1, column=0, sticky="w", padx=(0, 10))
         self.badge_entry.bind("<Return>", self.scan_badge)
 
-        tk.Label(top, text="Name (optional):", bg="#1a1a1a", fg="#e6e6e6",
-                 font=("Segoe UI", 10)).grid(row=0, column=2, sticky="w")
-        self.name_entry = tk.Entry(top, textvariable=self.name_var, width=20,
-                                   bg="#333333", fg="#e6e6e6", insertbackground="white",
-                                   relief="flat")
-        self.name_entry.grid(row=0, column=3, sticky="w", padx=(5, 20))
+        _label(top, "Name").grid(row=0, column=1, sticky="w")
+        _entry(top, self.name_var, 18).grid(row=1, column=1, sticky="w", padx=(0, 10))
 
-        tk.Label(top, text="Area:", bg="#1a1a1a", fg="#e6e6e6",
-                 font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=(8, 0))
-        area_cb = ttk.Combobox(top, textvariable=self.area_var,
-                               values=["CRET", "VRET", "TRANSHIP", "ILS"],
-                               width=15, state="readonly")
-        area_cb.grid(row=1, column=1, sticky="w", pady=(8, 0))
+        _label(top, "Area").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(top, textvariable=self.area_var,
+                     values=["CRET", "VRET", "TRANSHIP", "ILS"],
+                     width=12, state="readonly"
+                     ).grid(row=1, column=2, sticky="w", padx=(0, 10))
 
-        tk.Label(top, text="Indirect Role:", bg="#1a1a1a", fg="#e6e6e6",
-                 font=("Segoe UI", 10)).grid(row=1, column=2, sticky="w", pady=(8, 0))
-        role_cb = ttk.Combobox(top, textvariable=self.role_var,
-                               values=["Water Spider", "Down Stack", "Unloads", "N/A"],
-                               width=18, state="readonly")
-        role_cb.grid(row=1, column=3, sticky="w", pady=(8, 0))
+        _label(top, "Indirect Role").grid(row=0, column=3, sticky="w")
+        ttk.Combobox(top, textvariable=self.role_var,
+                     values=["Water Spider", "Down Stack", "Unloads", "N/A"],
+                     width=15, state="readonly"
+                     ).grid(row=1, column=3, sticky="w", padx=(0, 12))
 
-        load_btn = ttk.Button(top, text="Load Associate", style="DarkNav.TButton",
-                              command=self.load_associate)
-        load_btn.grid(row=0, column=4, padx=(10, 0))
+        ttk.Button(top, text="Load", style="DarkNav.TButton",
+                   command=self.load_associate).grid(row=1, column=4, sticky="w")
 
         # Session table
-        mid = tk.Frame(content, bg="#1a1a1a")
-        mid.pack(fill="both", expand=True)
-
         columns = ("start", "end", "type", "area", "role", "duration")
-        self.tree = ttk.Treeview(mid, columns=columns, show="headings",
+        self.tree = ttk.Treeview(content, columns=columns, show="headings",
                                  style="Dark.Treeview")
         for col in columns:
             self.tree.heading(col, text=col.capitalize(), anchor="w")
             self.tree.column(col, anchor="w", width=100)
         self.tree.pack(fill="both", expand=True)
 
-        # Status bar
+        # Status bar — single compact line
         bottom = tk.Frame(content, bg="#1a1a1a")
         bottom.pack(fill="x", pady=(10, 0))
 
-        tk.Label(bottom, text="Indirect hours today:",
-                 bg="#1a1a1a", fg="#e6e6e6",
-                 font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w")
+        tk.Label(bottom, text="Indirect:", bg="#1a1a1a", fg="#aaaaaa",
+                 font=("Segoe UI", 9)).pack(side="left")
         tk.Label(bottom, textvariable=self.indirect_hours_var,
                  bg="#1a1a1a", fg="#ffcc00",
-                 font=("Segoe UI", 11, "bold")).grid(row=0, column=1, sticky="w", padx=(5, 20))
+                 font=("Segoe UI", 11, "bold")).pack(side="left", padx=(4, 4))
+        tk.Label(bottom, text="hrs", bg="#1a1a1a", fg="#666666",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 20))
 
-        tk.Label(bottom, text="Status:",
-                 bg="#1a1a1a", fg="#e6e6e6",
-                 font=("Segoe UI", 10)).grid(row=0, column=2, sticky="w")
         self.status_label = tk.Label(bottom, textvariable=self.status_var,
                                      bg="#1a1a1a", fg="#00cc66",
-                                     font=("Segoe UI", 10, "bold"))
-        self.status_label.grid(row=0, column=3, sticky="w", padx=(5, 0))
+                                     font=("Segoe UI", 10, "bold"),
+                                     anchor="w")
+        self.status_label.pack(side="left", fill="x", expand=True)
 
-        db_label = tk.Label(
-            bottom,
-            text=f"DB: {DB_FILE}",
-            bg="#1a1a1a",
-            fg="#777777",
-            font=("Segoe UI", 8),
-            anchor="w",
-            justify="left",
-            wraplength=600
-        )
-        db_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(5, 0))
-
-        # Update FCLM status indicator
         self._update_fclm_status_label()
 
     # ---------- DIRECT / INDIRECT HELPERS ----------
@@ -1273,17 +1233,18 @@ class App:
 
     # ---------- NAV BUTTON ----------
 
-    def _add_nav_button(self, parent, text, command):
-        frame = tk.Frame(parent, bg="#111111")
-        frame.pack(fill="x", pady=4, padx=8)
+    def _add_nav_section(self, parent, text, color):
+        tk.Label(parent, text=text.upper(), bg="#111111", fg=color,
+                 font=("Segoe UI", 8, "bold")
+                 ).pack(fill="x", padx=14, pady=(10, 4), anchor="w")
 
-        btn = tk.Label(frame, text=text, bg="#333333", fg="#e6e6e6",
-                       font=("Segoe UI", 10, "bold"),
-                       padx=12, pady=6)
-        btn.pack(fill="x")
+    def _add_nav_button(self, parent, text, command):
+        btn = tk.Label(parent, text=text, bg="#1f1f1f", fg="#d6d6d6",
+                       font=("Segoe UI", 10), padx=12, pady=5, anchor="w")
+        btn.pack(fill="x", padx=8, pady=1)
         btn.bind("<Button-1>", lambda e: command())
-        btn.bind("<Enter>", lambda e: btn.config(bg="#444444"))
-        btn.bind("<Leave>", lambda e: btn.config(bg="#333333"))
+        btn.bind("<Enter>", lambda e: btn.config(bg="#2e2e2e", fg="#ffffff"))
+        btn.bind("<Leave>", lambda e: btn.config(bg="#1f1f1f", fg="#d6d6d6"))
 
     # ---------- CLOUD SYNC ----------
 
@@ -1342,29 +1303,20 @@ class App:
     # ---------- BADGE / ASSOCIATE ----------
 
     def scan_badge(self, event=None):
-        badge = self.badge_var.get().strip()
-        if not badge:
-            return
-        # If FCLM is connected, do FCLM lookup instead of just local
-        if self.fclm.is_connected():
-            self._fclm_lookup_employee(badge)
-            return
-
-        assoc_id = get_or_create_associate(badge, self.name_var.get().strip() or None)
-        self.current_associate_id = assoc_id
-        self.refresh_view()
-        self._update_direct_indirect_status(assoc_id)
+        self._load_badge(require=False)
 
     def load_associate(self):
+        self._load_badge(require=True)
+
+    def _load_badge(self, require):
         badge = self.badge_var.get().strip()
         if not badge:
-            messagebox.showerror("Error", "Enter a badge ID.")
+            if require:
+                messagebox.showerror("Error", "Enter a badge ID.")
             return
-        # If FCLM is connected, do FCLM lookup
         if self.fclm.is_connected():
             self._fclm_lookup_employee(badge)
             return
-
         assoc_id = get_or_create_associate(badge, self.name_var.get().strip() or None)
         self.current_associate_id = assoc_id
         self.refresh_view()
